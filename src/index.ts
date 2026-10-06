@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { URL } from 'node:url';
 import {
-  addShipmentEvent, allocateOrder, cancelOrder, closeOrder, confirmOrder, createApproval, createCustomsDeclaration, createOrder, decideApproval, deliverOrder, dispatchOrder, generateInvoice, getOrder, invoiceOverdue, listAudit, listOrders, listOrdersPage, listOutbox, operationSummary, publishOutbox, recordPayment, state, timeline, updateCustoms
+  addShipmentEvent, allocateOrder, cancelOrder, closeOrder, confirmOrder, createApproval, createCustomsDeclaration, createOrderAsync, decideApproval, deliverOrder, dispatchOrder, generateInvoice, getOrder, importOrdersAsync, invoiceOverdue, listAudit, listOrders, listOrdersPage, listOutbox, operationSummary, publishOutbox, recordPayment, ReferenceConflictError, state, timeline, updateCustoms, updateOrderAsync
 } from './domain.js';
 
 const port = Number(process.env.PORT ?? 4120);
@@ -10,7 +10,10 @@ const readBody = async (req: IncomingMessage) => { let raw = ''; for await (cons
 const tenantId = (req: IncomingMessage) => String(req.headers['x-tenant-id'] ?? 'tenant-acme');
 const actor = (req: IncomingMessage) => String(req.headers['x-actor'] ?? 'api-user');
 const success = (res: ServerResponse, body: unknown, status = 200) => json(res, status, { data: body });
-const failure = (res: ServerResponse, error: unknown, status = 400) => json(res, status, { error: error instanceof Error ? error.message : '请求失败' });
+const failure = (res: ServerResponse, error: unknown, status?: number) => {
+  const finalStatus = status ?? (error instanceof ReferenceConflictError ? error.status : 400);
+  json(res, finalStatus, { error: error instanceof Error ? error.message : '请求失败', code: error instanceof ReferenceConflictError ? error.code : undefined, existingOrderId: error instanceof ReferenceConflictError ? error.existingOrderId : undefined, reason: error instanceof ReferenceConflictError ? error.reason : undefined });
+};
 
 const server = createServer(async (req, res) => {
   const method = req.method ?? 'GET'; const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`); const path = url.pathname; const tenant = tenantId(req); const user = actor(req);
@@ -21,10 +24,18 @@ const server = createServer(async (req, res) => {
     if (method === 'GET' && path === '/api/operations/summary') return success(res, operationSummary(tenant));
     if (method === 'GET' && path === '/api/orders') return success(res, listOrders(tenant, { status: url.searchParams.get('status') ?? undefined, customerId: url.searchParams.get('customerId') ?? undefined, q: url.searchParams.get('q') ?? undefined }));
     if (method === 'GET' && path === '/api/orders/page') return success(res, listOrdersPage(tenant, { cursor: url.searchParams.get('cursor') ?? undefined, limit: Number(url.searchParams.get('limit') ?? 20) }));
-    const orderId = path.match(/^\/api\/orders\/([^/]+)$/)?.[1];
-    if (method === 'GET' && orderId) return success(res, getOrder(tenant, orderId));
-    if (method === 'GET' && orderId && path.endsWith('/timeline')) return success(res, timeline(tenant, orderId));
-    if (method === 'POST' && path === '/api/orders') return success(res, createOrder(tenant, await readBody(req), user), 201);
+    const orderAction = path.match(/^\/api\/orders\/([^/]+)\/(confirm|allocate|dispatch|deliver|close|cancel|timeline)$/);
+    const orderId = path.match(/^\/api\/orders\/([^/]+)$/)?.[1] ?? orderAction?.[1];
+    if (method === 'GET' && orderId && !orderAction) return success(res, getOrder(tenant, orderId));
+    if (method === 'GET' && orderId && orderAction?.[2] === 'timeline') return success(res, timeline(tenant, orderId));
+    if (method === 'POST' && path === '/api/orders') return success(res, await createOrderAsync(tenant, await readBody(req), user), 201);
+    if (method === 'POST' && path === '/api/orders/import') {
+      const body = await readBody(req);
+      const rows: Parameters<typeof importOrdersAsync>[1] = Array.isArray(body) ? body : body.rows;
+      if (!Array.isArray(rows)) throw new Error('导入数据必须是数组');
+      return success(res, await importOrdersAsync(tenant, rows, user));
+    }
+    if (method === 'PATCH' && orderId && !orderAction) return success(res, await updateOrderAsync(tenant, orderId, (await readBody(req)) as Parameters<typeof updateOrderAsync>[2], user));
     if (method === 'POST' && orderId && path.endsWith('/confirm')) return success(res, confirmOrder(tenant, orderId, user));
     if (method === 'POST' && orderId && path.endsWith('/allocate')) return success(res, allocateOrder(tenant, orderId, user));
     if (method === 'POST' && orderId && path.endsWith('/dispatch')) return success(res, dispatchOrder(tenant, orderId, user));
