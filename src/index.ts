@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { URL } from 'node:url';
 import {
-  addShipmentEvent, allocateOrder, cancelOrder, closeOrder, confirmOrder, createApproval, createCustomsDeclaration, createOrder, decideApproval, deliverOrder, dispatchOrder, generateInvoice, getOrder, invoiceOverdue, listAudit, listOrders, listOrdersPage, listOutbox, operationSummary, publishOutbox, recordPayment, state, timeline, updateCustoms
+  addShipmentEvent, allocateOrder, cancelOrder, closeOrder, confirmOrder, createApproval, createCustomsDeclaration, createOrder, decideApproval, deliverOrder, dispatchOrder, generateInvoice, getOrder, getOrderByReference, importOrders, invoiceOverdue, listAudit, listOrders, listOrdersPage, listOutbox, operationSummary, publishOutbox, recordPayment, state, timeline, updateCustoms, updateOrder
 } from './domain.js';
 
 const port = Number(process.env.PORT ?? 4120);
@@ -21,10 +21,13 @@ const server = createServer(async (req, res) => {
     if (method === 'GET' && path === '/api/operations/summary') return success(res, operationSummary(tenant));
     if (method === 'GET' && path === '/api/orders') return success(res, listOrders(tenant, { status: url.searchParams.get('status') ?? undefined, customerId: url.searchParams.get('customerId') ?? undefined, q: url.searchParams.get('q') ?? undefined }));
     if (method === 'GET' && path === '/api/orders/page') return success(res, listOrdersPage(tenant, { cursor: url.searchParams.get('cursor') ?? undefined, limit: Number(url.searchParams.get('limit') ?? 20) }));
+    if (method === 'GET' && path === '/api/orders/by-reference') return success(res, getOrderByReference(tenant, String(url.searchParams.get('reference') ?? '')));
     const orderId = path.match(/^\/api\/orders\/([^/]+)$/)?.[1];
     if (method === 'GET' && orderId) return success(res, getOrder(tenant, orderId));
     if (method === 'GET' && orderId && path.endsWith('/timeline')) return success(res, timeline(tenant, orderId));
     if (method === 'POST' && path === '/api/orders') return success(res, createOrder(tenant, await readBody(req), user), 201);
+    if (method === 'POST' && path === '/api/orders/import') { const body = await readBody(req); return success(res, importOrders(tenant, Array.isArray(body) ? body : body.orders, user)); }
+    if (method === 'PATCH' && orderId) return success(res, updateOrder(tenant, orderId, await readBody(req), user));
     if (method === 'POST' && orderId && path.endsWith('/confirm')) return success(res, confirmOrder(tenant, orderId, user));
     if (method === 'POST' && orderId && path.endsWith('/allocate')) return success(res, allocateOrder(tenant, orderId, user));
     if (method === 'POST' && orderId && path.endsWith('/dispatch')) return success(res, dispatchOrder(tenant, orderId, user));
